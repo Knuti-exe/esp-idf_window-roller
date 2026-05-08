@@ -65,8 +65,6 @@ void app_main(void)
 
     ESP_LOGI("led", "led: %s", esp_err_to_name(gpio_set_level(GPIO_LED, 1)));
 
-    // powinno dzialac do tego momentu
-
     esp_mqtt_topic_t topics[1];
 
     topics[0].filter = strdup(mqtt_topic_sub);
@@ -83,6 +81,8 @@ void app_main(void)
     ret = https_ota_init(&config);
 
     if (ret != ESP_OK) ESP_LOGE(tag, "OTA init error");
+
+    // should work to this moment
 
     ret = mqtt_start(topics, 1, (char *)&ca_crt_start);
 
@@ -103,17 +103,15 @@ void app_main(void)
 
     /*
     TODO:
+    [X] OTA
+    [ ] OTA new feature -> 
     [ ] Stepper motor driver
     [ ] Steps counter - logic 
-    [ ] OTA
     [ ] logs
     [ ] Light-sleep
     [ ] Stack and Heap statistics
             uxTaskGetStackHighWaterMark(task)
-    [ ] functions to test new soft version (app rollback)
-    [ ] 
     
-    esp_ota_mark_app_valid_cancel_rollback();
    */
 
 }
