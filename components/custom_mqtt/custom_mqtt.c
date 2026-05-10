@@ -6,27 +6,19 @@ static esp_mqtt_client_handle_t mqtt_client;
 static esp_mqtt_topic_t *topics;
 static int topics_size;
 
-esp_err_t mqtt_pub(payload_t buffer)
+esp_err_t mqtt_pub(payload_t *buffer)
 {
     int msg_id;
+    printf("%s : %.*s\n", buffer->topic, buffer->msg_len, buffer->msg);
 
-    if (buffer.topic && buffer.topic_len > 0)
+    if (buffer->topic && buffer->topic_len > 0)
     {
-        msg_id = esp_mqtt_client_publish(mqtt_client, buffer.topic, buffer.msg, buffer.msg_len, buffer.qos, buffer.retain);
+        msg_id = esp_mqtt_client_publish(mqtt_client, buffer->topic, buffer->msg, buffer->msg_len, buffer->qos, buffer->retain);
 
-        free(buffer.topic);
-        free(buffer.msg);
-
-        if (msg_id > 0) return ESP_OK;
+        if (msg_id >= 0) return ESP_OK;
         else return ESP_FAIL;
     }
-    else
-    {
-        free(buffer.topic);
-        free(buffer.msg);
-
-        return ESP_ERR_INVALID_ARG;
-    }
+    else return ESP_ERR_INVALID_ARG;
 }
 
 payload_t* mqtt_get()
@@ -34,7 +26,7 @@ payload_t* mqtt_get()
     payload_t *buffer = malloc(sizeof(payload_t));
     memset(buffer, 0, sizeof(payload_t));
 
-    ESP_ERROR_CHECK(xQueueReceive(ReceivedQueue, buffer, portMAX_DELAY));
+    xQueueReceive(ReceivedQueue, buffer, portMAX_DELAY);
 
     return buffer;
 }
@@ -165,9 +157,11 @@ esp_err_t mqtt_start(esp_mqtt_topic_t *_topics, int size, char *ca_crt_start)
     topics_size = size;
 
     for (int i=0; i<size; i++) {
-        char *pTopic = malloc(sizeof(_topics[i]));
-        sprintf(pTopic, _topics[i].filter);
-        topics[i].filter = pTopic;
+        // char *pTopic = malloc(sizeof(_topics[i]));
+        // sprintf(pTopic, _topics[i].filter);
+        // topics[i].filter = pTopic;
+
+        topics[i].filter = strdup(_topics[i].filter);
 
         topics[i].qos = _topics[i].qos;        
     }

@@ -10,6 +10,7 @@ void https_ota_update();
 void https_ota_loop(void *pvParameters);
 esp_err_t validate_version(esp_app_desc_t *new_app);
 TaskHandle_t ota_loop_handle = NULL;
+static SemaphoreHandle_t blockUpdate = NULL;
 
 
 esp_err_t https_ota_init(input_ota_conf_t *config)
@@ -19,6 +20,7 @@ esp_err_t https_ota_init(input_ota_conf_t *config)
     http_conf.cert_pem = strdup(config->cert);  // malloc() + deep copy
     http_conf.url = strdup(config->URL);
     interval = config->update_interval_h;
+    blockUpdate = config->_blockUpdate;
 
     interval = interval ? interval : 2;
 
@@ -39,6 +41,8 @@ void https_ota_loop(void *pvParameters)
 
         if ((notified_bits & (1 << 0)) || ret == pdFAIL)
         {
+            if (xSemaphoreTake(blockUpdate, portMAX_DELAY) != pdPASS) continue;
+
             ESP_LOGI(tag, "\t\tStarting OTA update...");
             https_ota_update();
         }
@@ -146,7 +150,7 @@ void https_ota_update()
         esp_https_ota_abort(ota_handle);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    
+    xSemaphoreGive(blockUpdate);
 }
 
 esp_err_t validate_version(esp_app_desc_t *new_app)

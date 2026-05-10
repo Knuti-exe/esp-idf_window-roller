@@ -6,8 +6,12 @@ static const char *dpp_tag = "DPP";
 static int s_retry_num = 0;
 static wifi_config_t s_dpp_wifi_config = {};
 static EventGroupHandle_t s_dpp_event_group;
+static bool s_dpp_config_received = false;
+uint8_t ssid[32];
+uint8_t passwd[64];
 
-esp_err_t try_connect();
+static esp_err_t write_nvs_conf(uint8_t *_ssid, uint8_t *_passwd);
+
 
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -38,10 +42,13 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
             ESP_LOGI(dpp_tag, "Got DPP conf");
 
             wifi_event_dpp_config_received_t *config = event_data;
-            strncpy((char *)s_dpp_wifi_config.sta.ssid, (char *)config->wifi_cfg.sta.ssid, sizeof(s_dpp_wifi_config.sta.ssid));
-            strncpy((char *)s_dpp_wifi_config.sta.password, (char *)config->wifi_cfg.sta.password, sizeof(s_dpp_wifi_config.sta.password));
-            
-            ESP_ERROR_CHECK(try_connect());
+
+            ESP_LOGI(dpp_tag, "Saving to NVS: %s", esp_err_to_name(write_nvs_conf(config->wifi_cfg.sta.ssid, config->wifi_cfg.sta.password)));
+
+            ESP_LOGW(dpp_tag, "RESTARTING!");
+
+            abort(); // ouch!
+
             break;
         case WIFI_EVENT_DPP_FAILED:
             wifi_event_dpp_failed_t *dpp_failure = event_data;
@@ -108,7 +115,6 @@ static void event_handler_second(void *arg, esp_event_base_t event_base, int32_t
         s_retry_num = 0;
         xEventGroupSetBits(s_dpp_event_group, DPP_CONNECTED_BIT);
     }
-    
 }
 
 static esp_err_t read_nvs_conf(uint8_t *ssid, uint8_t *passwd)
@@ -120,7 +126,7 @@ static esp_err_t read_nvs_conf(uint8_t *ssid, uint8_t *passwd)
     if (err != ESP_OK)
     {
         ESP_LOGW("NVS", "Could not open wifis NVS! %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
+        // nvs_close(nvs_handle);
         return ESP_FAIL;
     }
 
@@ -165,7 +171,7 @@ static esp_err_t write_nvs_conf(uint8_t *_ssid, uint8_t *_passwd)
     if (err != ESP_OK)
     {
         ESP_LOGW("NVS", "Could not open wifis NVS! %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
+        // nvs_close(nvs_handle);
         return ESP_FAIL;
     }
 
@@ -174,7 +180,7 @@ static esp_err_t write_nvs_conf(uint8_t *_ssid, uint8_t *_passwd)
     if (err != ESP_OK)
     {
         ESP_LOGW("NVS", "Could not write SSID to memory: %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
+        nvs_close(nvs_handle); 
         return ESP_FAIL;
     }
 
@@ -235,6 +241,7 @@ static esp_err_t dpp_enrollee_bootstrap(void)
 
 void wifi_init_sta()
 {
+    bool tried_connect = false;
     s_dpp_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());
@@ -247,6 +254,9 @@ void wifi_init_sta()
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
     //                                  First try - check NVS for last WiFi credentials
@@ -281,7 +291,7 @@ void wifi_init_sta()
    
     EventBits_t bits = xEventGroupWaitBits(s_dpp_event_group,
                                            DPP_CONNECTED_BIT | DPP_CONNECT_FAIL_BIT | WIFI_NVS_FAIL_BIT,
-                                           pdFALSE,
+                                           pdTRUE,
                                            pdFALSE,
                                            portMAX_DELAY);
 
@@ -314,9 +324,10 @@ void wifi_init_sta()
         // ESP_ERROR_CHECK(xSemaphoreGive(_wifiMutex));
         return;
     }
-    ESP_ERROR_CHECK(esp_wifi_stop());
+    if (tried_connect) ESP_ERROR_CHECK(esp_wifi_stop());
 
     vTaskDelay(pdMS_TO_TICKS(10));
+    s_retry_num = 0;
 
     //                                  Second try - start Easy Connect
     
@@ -336,23 +347,11 @@ void wifi_init_sta()
                                 portMAX_DELAY);
         
     if (bits & DPP_CONNECTED_BIT) 
-    {
-        ESP_LOGI(dpp_tag, "Connected after DPP! Trying to save cred to NVS");
-        // ESP_ERROR_CHECK(xSemaphoreGive(_wifiMutex));
-        
-        wifi_config_t wifi_config;
-        ESP_ERROR_CHECK(esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config));
-        
-        strncpy((char *)ssid, (char *)wifi_config.sta.ssid, sizeof(uint8_t[32]));
-        strncpy((char *)passwd, (char *)wifi_config.sta.password, sizeof(uint8_t[64]));
+    {        
+        ESP_LOGI(dpp_tag, "Saving configuration: %s", esp_err_to_name(write_nvs_conf(ssid, passwd)));
 
-        ssid[31] = '\0';
-        passwd[63] = '\0';
-
-        if (write_nvs_conf(ssid, passwd) == ESP_FAIL)
-        {
-            ESP_LOGE("ERROR", "Could not write wifi credentials to NVS!");
-        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
     } 
     else if (bits & DPP_CONNECT_FAIL_BIT)
     {
@@ -376,23 +375,4 @@ void wifi_init_sta()
     if (passwd) free(passwd);
     ssid = NULL;
     passwd = NULL;
-}
-
-esp_err_t try_connect()
-{   
-    esp_err_t ret;
-
-    ret = esp_wifi_set_config(ESP_IF_WIFI_STA, &s_dpp_wifi_config);
-    if (ret != ESP_OK)
-    {
-        return ret;
-    }
-
-    ret = esp_wifi_connect();
-
-    if (ret != ESP_OK)
-    {
-        return ret;
-    }
-    return ESP_OK;
 }
