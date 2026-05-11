@@ -1,4 +1,5 @@
 #include "ota.h"
+#include "ble_listening.h"
 
 esp_https_ota_config_t esp_ota_conf;
 static int interval = 0;
@@ -44,6 +45,7 @@ void https_ota_loop(void *pvParameters)
             if (xSemaphoreTake(blockUpdate, portMAX_DELAY) != pdPASS) continue;
 
             ESP_LOGI(tag, "\t\tStarting OTA update...");
+            suspend_ble();
             https_ota_update();
         }
     }
@@ -151,6 +153,8 @@ void https_ota_update()
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     xSemaphoreGive(blockUpdate);
+    resume_ble();
+
 }
 
 esp_err_t validate_version(esp_app_desc_t *new_app)
@@ -183,4 +187,19 @@ esp_err_t validate_version(esp_app_desc_t *new_app)
     
     if (patch2 > patch) return ESP_OK;
     else return ESP_FAIL;
+}
+
+char *getRunningVer()
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_app_desc_t running_info;
+
+    char *version = NULL;
+
+    if (esp_ota_get_partition_description(running, &running_info) == ESP_OK) 
+    {
+        version = strdup(running_info.version);
+    }
+
+    return version;
 }

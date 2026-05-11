@@ -11,13 +11,18 @@
 #include <esp_log.h>
 
 typedef struct {
-    int topic_len;
     char *topic;
+    int topic_len;
     int msg_len;
     char *msg;
     int retain;
     int qos;
 } payload_t;
+
+typedef struct {
+    char msg[64];
+    int msg_len;
+} LogsMsg_t;
 
 esp_err_t mqtt_start(esp_mqtt_topic_t *_topics, int size, char *ca_crt_start);
 payload_t* mqtt_get();

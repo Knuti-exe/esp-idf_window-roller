@@ -9,9 +9,8 @@ static int topics_size;
 esp_err_t mqtt_pub(payload_t *buffer)
 {
     int msg_id;
-    printf("%s : %.*s\n", buffer->topic, buffer->msg_len, buffer->msg);
 
-    if (buffer->topic && buffer->topic_len > 0)
+    if (buffer->topic)
     {
         msg_id = esp_mqtt_client_publish(mqtt_client, buffer->topic, buffer->msg, buffer->msg_len, buffer->qos, buffer->retain);
 
