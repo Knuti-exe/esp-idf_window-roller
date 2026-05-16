@@ -34,21 +34,24 @@ void runMotor(void *pvParameters);
 void pubInfo();
 void motor_timer_callback(void* arg);
 void log_timer_callback(void* arg);
-uint32_t load_motor_steps();
-void save_motor_steps(uint32_t steps);
+esp_err_t load_config();
+void save_config();
 void send_logs(void *pvParameters);
 void send_ble_data(void *pvParameters);
 void heap_stats(void *pvParameters);
 
 const char *tag = "WIN_ROLL";
 const gpio_num_t pins[4] = {GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_7, GPIO_NUM_10};
-const char *mqtt_topic_pub = "smart_home/window_roller/state";
-const char *mqtt_topic_sub = "smart_home/window_roller/motor";
-const char *mqtt_update_sub = "smart_home/window_roller/update";       // CANNOT BE RETAINED MESSAGE
-const char *mqtt_logs_topic = "smart_home/window_roller/logs";
-const char *mqtt_plants_plant1 = "smart_home/window_roller/plants/plant1";
-const char *mqtt_plants_plant2 = "smart_home/window_roller/plants/plant2";
-const char *mqtt_plants_battery = "smart_home/window_roller/plants/battery";
+const char *topic_roller_state_pub = "smart_home/window_roller/state";          // Roller position (ACK) 
+const char *topic_motor_sub = "smart_home/window_roller/motor";                 // Motor position (command)
+const char *topic_force_ota_sub = "smart_home/window_roller/update";            // Msg "true" will try to force OTA update
+const char *topic_logs_pub = "smart_home/window_roller/logs";                   // Logs (optional for debugging)
+const char *topic_plant1_pub = "smart_home/window_roller/plants/plant1";        // Received and retransmitted data from BLE sensor
+const char *topic_plant2_pub = "smart_home/window_roller/plants/plant2";        // As above
+const char *topic_battery_pub = "smart_home/window_roller/plants/battery";      // As above
+const char *topic_set_motor_sub = "smart_home/window_roller/set_motor";         // Roller position override ("up", "half", "down")
+const char *topic_ram_log_sub = "smart_home/window_roller/ram_logging";         // Switch for RAM stats - turned on by default
+const char *topic_steps_pub = "smart_home/window_roller/steps";                 // Motor steps (shared once every 20 sec)
 const int ROLLER_UP = 0;
 const int ROLLER_HALF = 40000;
 const int ROLLER_DOWN = 86000;
@@ -56,6 +59,8 @@ static bool cancel_rollback = false;
 volatile int target_step = 0;
 int seq_index = 0;
 int log_index = 0;
+static bool logging_ram = true;
+
 
 static const int sequence[9][2] = {
     {GPIO_1, -1},
@@ -87,6 +92,7 @@ static StaticQueue_t static_logs_queue;
 QueueHandle_t logs_queue;
 LogsMsg_t xPayloadStorage[QUEUE_LENGTH];
 QueueHandle_t ble_queue;
+TaskHandle_t ram_task_handle;
 
 void app_main(void)
 {
@@ -105,14 +111,18 @@ void app_main(void)
     /************************************************************************ */
     extern const uint8_t ca_crt_start[] asm("_binary_ca_cert_pem_start");   // same certificate for MQTT and HTTPS
 
-    esp_mqtt_topic_t topics[2];
+    esp_mqtt_topic_t topics[4];
 
-    topics[0].filter = strdup(mqtt_topic_sub);
-    topics[0].qos = 0;
-    topics[1].filter = strdup(mqtt_update_sub);
+    topics[0].filter = strdup(topic_motor_sub);
+    topics[0].qos = 1;
+    topics[1].filter = strdup(topic_force_ota_sub);
     topics[1].qos = 1;
-
-    ret = mqtt_start(topics, 2, (char *)&ca_crt_start);
+    topics[2].filter = strdup(topic_set_motor_sub);
+    topics[2].qos = 1;
+    topics[3].filter = strdup(topic_ram_log_sub);
+    topics[3].qos = 1;
+    
+    ret = mqtt_start(topics, 4, (char *)&ca_crt_start);
 
     if (ret != ESP_OK) ESP_LOGE(tag, "mqtt_start() ERROR: %s", esp_err_to_name(ret));
     else ESP_LOGI(tag, "mqtt started successfuly!");
@@ -132,18 +142,34 @@ void app_main(void)
 
     //                              HTTPS OTA configuration
     /************************************************************************ */
+    blockUpdate = xSemaphoreCreateMutex();
+    xSemaphoreGive(blockUpdate);
+    
     input_ota_conf_t config = {
         .URL = strdup("https://192.168.0.100/window_roller/latest.bin"),
         .cert = (char *)ca_crt_start,
         .update_interval_h = atoi(OTA_UPDATES_INTERVAL),
         ._blockUpdate = blockUpdate,
+        .logs_queue = logs_queue
     };
 
+    LogsMsg_t log_msg = {0};
+    
     ret = https_ota_init(&config);
-    if (ret != ESP_OK) ESP_LOGE(tag, "OTA init error");
+    if (ret != ESP_OK) 
+    {
+        ESP_LOGE(tag, "OTA init error");
+        snprintf(log_msg.msg, 64, "OTA init: Error");
+    }
+    else
+    {
+        snprintf(log_msg.msg, 64, "OTA init: OK");
+    }
+    xQueueSend(logs_queue, &log_msg, 0);
 
-    blockUpdate = xSemaphoreCreateMutex();
-    xSemaphoreGive(blockUpdate);
+    // #TODO   Logi maja postać:   <what>: <state> - <reason>
+
+    
 
     //                              Motor driver configuration
     /************************************************************************ */
@@ -157,8 +183,12 @@ void app_main(void)
 
     gpio_config(&gpio_conf);
 
-    motor.steps = load_motor_steps();
-    
+    ret = load_config();
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(tag, "Could not read config!");
+    }    
+
     xTaskCreate(runMotor, "Motor driver", 4096, (void *)motorQueue, 2, NULL);
 
     motor_sem = xSemaphoreCreateBinary();
@@ -196,7 +226,10 @@ void app_main(void)
     //                              Logs
     /************************************************************************ */
 
-    xTaskCreate(heap_stats, "RAM stats publishing", 4096, (void *)logs_queue, 2, NULL);
+    xTaskCreate(heap_stats, "RAM stats publishing", 4096, (void *)logs_queue, 2, &ram_task_handle);
+
+    if (!logging_ram) vTaskSuspend(ram_task_handle);
+    
 
     /*
     TODO:
@@ -204,8 +237,8 @@ void app_main(void)
     [X] Steps counter - logic 
     [X] Stepper motor driver
     [X] OTA new feature -> blocking update while motor is working and program on update
-    [ ] logs
-    [ ] Receiving timedate from local server and add timestamp to logs
+    [ ] logs - in one, simple function
+    [X] Receiving timedate from local server and add timestamp to logs - done on local python script
     [X] BLE listening
     [X] Heap stats
     
@@ -219,7 +252,7 @@ void pubInfo()
     esp_err_t ret;
     payload_t data = {0};
 
-    data.topic = strdup(mqtt_topic_pub);
+    data.topic = strdup(topic_roller_state_pub);
 
     if (motor.steps < ROLLER_UP + 10) data.msg = strdup("Fully opened");
     else if (motor.steps > (ROLLER_HALF - 10) 
@@ -263,17 +296,22 @@ void runMotor(void *pvParameters)
             xQueueReset(motor_sem);  // same as => xSemaphoreTake(motor_sem, 0);
 
             esp_timer_start_periodic(motor_timer, 2000);
-            esp_timer_start_periodic(logs_timer, 1000000);
+            esp_timer_start_periodic(logs_timer, 2000000);  // 20 sec
 
             if (xSemaphoreTake(motor_sem, portMAX_DELAY) == pdPASS)
             {
-                ESP_LOGI(tag, "Motor on position!");
+                LogsMsg_t log_msg = {0};
+                snprintf(log_msg.msg, 64, "Motor state: in desired position");
+                log_msg.msg_len = strlen(log_msg.msg);
+                
+                xQueueSend(logs_queue, &log_msg, 0);
+                ESP_LOGI(tag, "Motor state: in desired position");
 
                 esp_timer_stop(logs_timer);
 
                 pubInfo();
 
-                save_motor_steps(motor.steps);
+                save_config();
 
                 if (!cancel_rollback)
                 {
@@ -318,28 +356,41 @@ void motor_timer_callback(void* arg)
     if (sequence[seq_index][1] != -1) gpio_set_level(sequence[seq_index][1], 1);
 }
 
-void log_timer_callback(void* arg) 
-{    
-    printf("Step: %ld\n", motor.steps); // #TODO send that via MQTT (outside that function)
+void log_timer_callback(void* arg)
+{   
+    LogsMsg_t log_msg = {0};
+    
+    snprintf(log_msg.msg, 64, "Motor steps: %ld", motor.steps);
+    log_msg.msg_len = strlen(log_msg.msg);
+                
+    xQueueSend(logs_queue, &log_msg, 0);
+    ESP_LOGI(tag, "Motor steps: %ld", motor.steps);
+
+    mqtt_log(&log_msg, topic_steps_pub);
 }
 
 void process_input(void *pvParameters)
 {
     QueueHandle_t queue = (QueueHandle_t) pvParameters;
-    payload_t *data;
+    payload_t *data = malloc(sizeof(payload_t));
+    data->msg = NULL;
+    data->topic = NULL;
     for (;;)
     {
+        if (data->msg) free(data->msg);   // #TODO moze wywalic
+        if (data->topic) free(data->topic);
+
         data = mqtt_get(); // blocks code
 
         ESP_LOGI(tag, "Got topic:msg - %.*s:%.*s", data->topic_len, data->topic, data->msg_len, data->msg);
         
-        if (strcmp(data->topic, mqtt_topic_sub) == 0)
+        if (strcmp(data->topic, topic_motor_sub) == 0)
         {
             if (strcmp(data->msg, "up") == 0) 
             {
                 ESP_LOGI(tag, "Going up");
 
-                if (xQueueSend(queue, &ROLLER_UP, 1000) != pdPASS)
+                if (xQueueSend(queue, &ROLLER_UP, 100) != pdPASS)
                 {
                     ESP_LOGW(tag, "Queue full - waiting for pending operations...");
                 }
@@ -348,7 +399,7 @@ void process_input(void *pvParameters)
             {
                 ESP_LOGI(tag, "Going half-way");
 
-                if (xQueueSend(queue, &ROLLER_HALF, 1000) != pdPASS)
+                if (xQueueSend(queue, &ROLLER_HALF, 100) != pdPASS)
                 {
                     ESP_LOGW(tag, "Queue full - waiting for pending operations...");
                 }
@@ -358,17 +409,14 @@ void process_input(void *pvParameters)
             {
                 ESP_LOGI(tag, "Going down");
 
-                if (xQueueSend(queue, &ROLLER_DOWN, 1000) != pdPASS)
+                if (xQueueSend(queue, &ROLLER_DOWN, 100) != pdPASS)
                 {
                     ESP_LOGW(tag, "Queue full - waiting for pending operations...");
                 }
             }
-            else
-            {
-                ESP_LOGW(tag, "Unknown msg");
-            }
+            else continue;
         }
-        else if (strcmp(data->topic, mqtt_update_sub) == 0)
+        else if (strcmp(data->topic, topic_force_ota_sub) == 0)
         {
             if (strcmp(data->msg, "true") == 0 && xSemaphoreTake(blockUpdate, 0) == pdPASS)
             {
@@ -377,16 +425,64 @@ void process_input(void *pvParameters)
                 force_ota_update();
             }
         }
+        else if (strcmp(data->topic, topic_set_motor_sub) == 0)
+        {
+            if (strcmp(data->msg, "up") == 0) motor.steps = ROLLER_UP;
+            else if (strcmp(data->msg, "half") == 0) motor.steps = ROLLER_HALF;
+            else if (strcmp(data->msg, "down") == 0) motor.steps = ROLLER_DOWN;
+            else continue;
+            target_step = motor.steps;
+            save_config();
+        }
+        else if (strcmp(data->topic, topic_ram_log_sub) == 0)
+        {
+            if (strcmp(data->msg, "true") == 0)
+            {
+                LogsMsg_t log_msg = {0};
+    
+                snprintf(log_msg.msg, 64, "FREE RAM: Logging turned ON");
+                log_msg.msg_len = strlen(log_msg.msg);
+                            
+                xQueueSend(logs_queue, &log_msg, 0);
 
-        free(data->msg);
-        free(data->topic);
+                vTaskResume(ram_task_handle);
+            } 
+            else if (strcmp(data->msg, "false") == 0) 
+            {
+                LogsMsg_t log_msg = {0};
+    
+                snprintf(log_msg.msg, 64, "FREE RAM: Logging turned OFF");
+                log_msg.msg_len = strlen(log_msg.msg);
+                            
+                xQueueSend(logs_queue, &log_msg, 0);
+
+                vTaskSuspend(ram_task_handle);
+            }
+            else continue;
+            
+            save_config();
+        }
+
+        
     }    
 }
 
-void save_motor_steps(uint32_t steps) 
+/*
+    motor_data:
+        uint32_t steps;
+    ram_logging:
+        bool state;
+*/
+
+void save_config() 
 {
     nvs_handle_t handle;
     esp_err_t err;
+
+    eTaskState state = eTaskGetState(ram_task_handle);
+    int8_t running = state == eSuspended ? 0 : 1;
+
+    ESP_LOGI(tag, "Saving log_state: %d", running);
 
     err = nvs_open("motor_data", NVS_READWRITE, &handle);
     if (err != ESP_OK)
@@ -394,26 +490,71 @@ void save_motor_steps(uint32_t steps)
         ESP_LOGW(tag, "Error while opening NVS namespace: %s\n", esp_err_to_name(err));
         return;
     }
-
-    err = nvs_set_u32(handle, "steps", steps);
+    err = nvs_set_u32(handle, "steps", motor.steps);
     if (err != ESP_OK) printf("Error while saving!\n");
 
+    err = nvs_open("ram_logging", NVS_READWRITE, &handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(tag, "Error while opening NVS namespace: %s\n", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_i8(handle, "state", running);
+    if (err != ESP_OK) printf("Error while saving!\n");
+    
     err = nvs_commit(handle);
     if (err != ESP_OK) ESP_LOGE(tag, "Could not commit save to NVS!\n");
 
     nvs_close(handle);
 }
 
-uint32_t load_motor_steps() {
-    nvs_handle_t handle;
+esp_err_t load_config() {
+    nvs_handle_t handle_motor, handle_ram;
     uint32_t steps = 0; 
+    esp_err_t ret;
+    int8_t state = 0;
 
-    if (nvs_open("motor_data", NVS_READONLY, &handle) == ESP_OK)
+    if (nvs_open("motor_data", NVS_READONLY, &handle_motor) == ESP_OK)
     {
-        nvs_get_u32(handle, "steps", &steps);
-        nvs_close(handle);
+        ret = nvs_get_u32(handle_motor, "steps", &steps);
+        nvs_close(handle_motor);
     }
-    return steps;
+    else 
+    {
+        ESP_LOGE(tag, "NVS: ERROR - problem with opening \"motor_data\" namespace");
+        return ESP_FAIL;
+    }
+    
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(tag, "NVS: ERROR - problem with reading \"motor_data/steps\" attr");
+        return ret;
+    } 
+
+    motor.steps = steps;
+
+    if (nvs_open("ram_logging", NVS_READONLY, &handle_ram) == ESP_OK)
+    {
+        ret = nvs_get_i8(handle_ram, "state", &state);
+        nvs_close(handle_ram);
+    }
+    else 
+    {
+        ESP_LOGE(tag, "NVS: ERROR - problem with opening \"ram_logging\" namespace");
+        return ESP_FAIL;
+    }
+
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(tag, "NVS: ERROR - problem with reading \"ram_logging/state\" attr");
+        return ret;
+    } 
+
+    ESP_LOGI(tag, "Reading log_state: %d", state);
+
+    logging_ram = state == 0 ? false : true;
+
+    return ESP_OK;
 }
 
 void send_logs(void *pvParameters)
@@ -423,7 +564,7 @@ void send_logs(void *pvParameters)
     payload_t payload;
     esp_err_t ret;
 
-    payload.topic = strdup(mqtt_logs_topic);
+    payload.topic = strdup(topic_logs_pub);
 
     for (;;)
     {
@@ -444,7 +585,7 @@ void send_logs(void *pvParameters)
     }
 }
 
-void send_ble_data(void *pvParameters)
+void send_ble_data(void *pvParameters)   // #TODO jesli licznik w payloadzie jest taki sam jak ostatnio - nie przesylac do brokera danych
 {
     QueueHandle_t queue = (QueueHandle_t) pvParameters;
     ble_payload_t data;
@@ -458,9 +599,9 @@ void send_ble_data(void *pvParameters)
         mqtt_data[i].msg = malloc(5);
         memset(mqtt_data[i].msg, 0, 5);
     }
-    mqtt_data[0].topic = strdup(mqtt_plants_plant1);
-    mqtt_data[1].topic = strdup(mqtt_plants_plant2);
-    mqtt_data[2].topic = strdup(mqtt_plants_battery);
+    mqtt_data[0].topic = strdup(topic_plant1_pub);
+    mqtt_data[1].topic = strdup(topic_plant2_pub);
+    mqtt_data[2].topic = strdup(topic_battery_pub);
 
     for (;;)
     {
@@ -493,38 +634,24 @@ void heap_stats(void *pvParameters)
     uint32_t free_ram, min_free_ram;
     size_t largest_block;
 
-    LogsMsg_t logs[3] = {0};
-
-    for (int i=0; i<3; i++)
-    {
-        memset(logs[i].msg, 0, 64);
-    }
+    LogsMsg_t log_msg = {0};
     
     for (;;)
     {
         if (xSemaphoreTake(blockUpdate, 200) == pdPASS)
         {
-            for (int i=0; i<3; i++)
-            {
-                memset(logs[i].msg, 0, 64);
-            }       
+            memset(log_msg.msg, 0, 64);
 
             free_ram = esp_get_free_heap_size();
             min_free_ram = esp_get_minimum_free_heap_size();
             largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
-            logs[0].msg_len = snprintf(logs[0].msg, 64, "Actual free RAM:       %lu bytes", free_ram);
-            logs[1].msg_len = snprintf(logs[1].msg, 64, "Largest block:         %zu bytes", largest_block);
-            logs[2].msg_len = snprintf(logs[2].msg, 64, "Lowest free RAM:       %lu bytes", min_free_ram);
+            snprintf(log_msg.msg, 64, "Free RAM: %lub; %zub; %lub", free_ram, largest_block, min_free_ram);
 
-            xQueueSend(queue, &logs[0], 0);
-            xQueueSend(queue, &logs[1], 0);
-            xQueueSend(queue, &logs[2], 0);
+            xQueueSend(queue, &log_msg, 0);
 
             xSemaphoreGive(blockUpdate);
-        }
-        
-        
+        }  
         vTaskDelay(pdMS_TO_TICKS(1000 * 60)); // once every 1min
     }
 }

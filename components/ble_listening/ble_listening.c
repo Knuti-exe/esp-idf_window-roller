@@ -4,6 +4,7 @@ QueueHandle_t ble_data_queue = NULL;
 static bool ble_running = false;
 // static const uint8_t plants_mac[6] = {0xac, 0xa7, 0x04, 0xb9, 0x1e, 0xc6};
 static const uint8_t plants_mac_reverse[6] = {0xc6, 0x1e, 0xb9, 0x04, 0xa7, 0xac};
+static uint8_t last_msg_id = 0;
 
 static int ble_gap_event_handler(struct ble_gap_event *event, void *arg) 
 {    
@@ -14,6 +15,7 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
         if (memcmp(disc->addr.val, plants_mac_reverse, 6) == 0)  // PLANTS
         {
             struct ble_hs_adv_fields fields;
+            uint8_t temp_last_msg_id = 0;
             
             int rc = ble_hs_adv_parse_fields(&fields, disc->data, disc->length_data);
             
@@ -23,16 +25,20 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
                 .hum2 = 0xff,
             };
 
-            if (rc == 0 && fields.mfg_data != NULL && fields.mfg_data_len > 3)
+            if (rc == 0 && fields.mfg_data != NULL && fields.mfg_data_len > 4)
             {
                 int len = fields.mfg_data_len;
 
-                payload.hum2 = fields.mfg_data[len - 1];
-                payload.hum1 = fields.mfg_data[len - 2];
-                payload.bat = fields.mfg_data[len - 3];
+                temp_last_msg_id = fields.mfg_data[len - 1];
+                
+                payload.hum2 = fields.mfg_data[len - 2];
+                payload.hum1 = fields.mfg_data[len - 3];
+                payload.bat = fields.mfg_data[len - 4];
             }
 
-            xQueueSend(ble_data_queue, &payload, 0);
+            if (temp_last_msg_id != last_msg_id) xQueueSend(ble_data_queue, &payload, 0);
+
+            last_msg_id = temp_last_msg_id;
         }
     }
     

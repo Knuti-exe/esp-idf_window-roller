@@ -16,12 +16,13 @@ typedef struct {
     char *URL;
     int update_interval_h;
     SemaphoreHandle_t _blockUpdate;
+    QueueHandle_t logs_queue;
 }input_ota_conf_t;
 
 esp_err_t https_ota_init(input_ota_conf_t *config);
 void ota_cancel_rollback();
 void force_ota_update();
 char *getRunningVer();
-
+void otaGiveLogQueue(QueueHandle_t queue);
 
 // https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32/api-reference/system/ota.html#secure-ota-updates

@@ -167,3 +167,22 @@ esp_err_t mqtt_start(esp_mqtt_topic_t *_topics, int size, char *ca_crt_start)
 
     return ESP_OK;
 }
+
+esp_err_t mqtt_log(LogsMsg_t *payload, const char *topic)
+{
+    payload_t msg = {0};
+    msg.topic = strdup(topic);
+    msg.qos = 0;
+    msg.retain = 0;
+    msg.topic_len = strlen(topic);
+    msg.msg = malloc(strlen(payload->msg));
+    // memcpy(msg.msg, payload->msg, sizeof(payload->msg));
+    msg.msg = strdup(payload->msg);
+    msg.msg_len = payload->msg_len;
+
+    esp_err_t ret = mqtt_pub(&msg);
+
+    free(msg.topic);
+    free(msg.msg);
+    return ret;
+}

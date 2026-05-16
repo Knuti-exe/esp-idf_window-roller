@@ -1,17 +1,19 @@
 #include "ota.h"
 #include "ble_listening.h"
+#include "custom_mqtt.h"
 
 esp_https_ota_config_t esp_ota_conf;
 static int interval = 0;
 static const char *tag = "HTTPS_OTA";
 static esp_http_client_config_t http_conf = {0};
-
+QueueHandle_t LogsQueue = NULL;
+TaskHandle_t ota_loop_handle = NULL;
+static SemaphoreHandle_t blockUpdate = NULL;
 
 void https_ota_update();
 void https_ota_loop(void *pvParameters);
 esp_err_t validate_version(esp_app_desc_t *new_app);
-TaskHandle_t ota_loop_handle = NULL;
-static SemaphoreHandle_t blockUpdate = NULL;
+
 
 
 esp_err_t https_ota_init(input_ota_conf_t *config)
@@ -22,6 +24,7 @@ esp_err_t https_ota_init(input_ota_conf_t *config)
     http_conf.url = strdup(config->URL);
     interval = config->update_interval_h;
     blockUpdate = config->_blockUpdate;
+    LogsQueue = config->logs_queue;
 
     interval = interval ? interval : 2;
 
@@ -42,9 +45,15 @@ void https_ota_loop(void *pvParameters)
 
         if ((notified_bits & (1 << 0)) || ret == pdFAIL)
         {
-            if (xSemaphoreTake(blockUpdate, portMAX_DELAY) != pdPASS) continue;
+            if (xSemaphoreTake(blockUpdate, portMAX_DELAY)!= pdPASS) continue;
 
-            ESP_LOGI(tag, "\t\tStarting OTA update...");
+            ESP_LOGI(tag, "Starting OTA update...");
+
+            LogsMsg_t log_msg = {0};
+            snprintf(log_msg.msg, 64, "OTA: Starting OTA update...");
+            log_msg.msg_len = strlen(log_msg.msg);
+            xQueueSend(LogsQueue, &log_msg, 0); 
+
             suspend_ble();
             https_ota_update();
         }
@@ -64,8 +73,13 @@ void ota_cancel_rollback()
 {
     esp_err_t ret = esp_ota_mark_app_valid_cancel_rollback();
 
-    if (ret == ESP_OK) ESP_LOGI(tag, "Rollback canceled!");
-    else ESP_LOGW(tag, "Could not rollback application!");
+    LogsMsg_t log_msg = {0};
+    
+    if (ret == ESP_OK) snprintf(log_msg.msg, 64, "OTA: APP OK - Rollback canceled.");    
+    else snprintf(log_msg.msg, 64, "OTA: APP WARNING - Could not rollback application.");
+
+    log_msg.msg_len = strlen(log_msg.msg);
+    xQueueSend(LogsQueue, &log_msg, 0); 
 }
 
 void https_ota_update()
@@ -75,11 +89,17 @@ void https_ota_update()
         esp_err_t ret;
         esp_https_ota_handle_t ota_handle = NULL;
         esp_app_desc_t app_desc = {};
+        LogsMsg_t log_msg = {0};
+
 
         ret = esp_https_ota_begin(&esp_ota_conf, &ota_handle);
         if (ret != ESP_OK)
         {
             ESP_LOGE(tag, "Unexpected error on ota_begin: %s", esp_err_to_name(ret));
+            snprintf(log_msg.msg, 64, "OTA: UPDATE ERROR - %s", esp_err_to_name(ret)); 
+            log_msg.msg_len = strlen(log_msg.msg);
+            xQueueSend(LogsQueue, &log_msg, 0); 
+
             esp_https_ota_abort(ota_handle);
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
@@ -89,15 +109,24 @@ void https_ota_update()
         if (ret != ESP_OK)
         {
             ESP_LOGE(tag, "Unexpected error on ota_get_img_desc: %s", esp_err_to_name(ret));
+            snprintf(log_msg.msg, 64, "OTA: READING IMAGE ERROR - %s", esp_err_to_name(ret)); 
+            log_msg.msg_len = strlen(log_msg.msg);
+            xQueueSend(LogsQueue, &log_msg, 0); 
+
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 
         ret = validate_version(&app_desc);
+
+        if (ret == ESP_OK) snprintf(log_msg.msg, 64, "OTA: new ver available! - %s", app_desc.version);
+        else if (ret != ESP_OK) snprintf(log_msg.msg, 64, "OTA: Found older or same version! Aborting update...");
+        log_msg.msg_len = strlen(log_msg.msg);
+
+        xQueueSend(LogsQueue, &log_msg, 0); 
         
         if (ret == ESP_OK)
         {
-            ESP_LOGI(tag, "Found newer soft version - starting OTA update.");
             int max_size = esp_https_ota_get_image_size(ota_handle);
             int last_log = 0;
 
@@ -125,7 +154,11 @@ void https_ota_update()
                 if (ret == ESP_OK && ota_finish_err == ESP_OK) 
                 {
                     ESP_LOGI(tag, "ESP_HTTPS_OTA upgrade successful. Rebooting...");
-                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    snprintf(log_msg.msg, 64, "OTA: UPGRADE SUCCESSFUL - Rebooting..."); 
+                    log_msg.msg_len = strlen(log_msg.msg);
+                    xQueueSend(LogsQueue, &log_msg, 0); 
+
+                    vTaskDelay(pdMS_TO_TICKS(5000));   // 5 sec for sending logs 
                     esp_restart();
                 } 
                 else 
@@ -133,6 +166,9 @@ void https_ota_update()
                     if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) 
                     {
                         ESP_LOGE(tag, "Image validation failed, image is corrupted");
+                        snprintf(log_msg.msg, 64, "OTA: Image validation FAILED."); 
+                        log_msg.msg_len = strlen(log_msg.msg);
+                        xQueueSend(LogsQueue, &log_msg, 0); 
                     }
                     else
                     {
