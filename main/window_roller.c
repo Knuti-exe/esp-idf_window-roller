@@ -165,11 +165,7 @@ void app_main(void)
     {
         snprintf(log_msg.msg, 64, "OTA init: OK");
     }
-    xQueueSend(logs_queue, &log_msg, 0);
-
-    // #TODO   Logi maja postać:   <what>: <state> - <reason>
-
-    
+    xQueueSend(logs_queue, &log_msg, 0);    
 
     //                              Motor driver configuration
     /************************************************************************ */
@@ -585,7 +581,7 @@ void send_logs(void *pvParameters)
     }
 }
 
-void send_ble_data(void *pvParameters)   // #TODO jesli licznik w payloadzie jest taki sam jak ostatnio - nie przesylac do brokera danych
+void send_ble_data(void *pvParameters)
 {
     QueueHandle_t queue = (QueueHandle_t) pvParameters;
     ble_payload_t data;
@@ -613,8 +609,8 @@ void send_ble_data(void *pvParameters)   // #TODO jesli licznik w payloadzie jes
             snprintf(mqtt_data[1].msg, 5, "%u%%", data.hum2);  // "XXX%" => 4 chars + '\0'
             mqtt_data[1].msg_len = 5;
             
-            snprintf(mqtt_data[2].msg, 5, "%u%%", data.bat);  // "XXX%" => 4 chars + '\0'
-            mqtt_data[2].msg_len = 5;
+            snprintf(mqtt_data[2].msg, 9, "%u mV", (unsigned int)data.bat);  // "XXXXX mV" => max 8 chars + '\0'
+            mqtt_data[2].msg_len = 9;
             
             for (int i=0; i<3; i++)
             {
@@ -624,6 +620,16 @@ void send_ble_data(void *pvParameters)   // #TODO jesli licznik w payloadzie jes
 
                 memset(mqtt_data[i].msg, 0, 5);
             }
+
+            if (data.brownout == true)
+            {
+                LogsMsg_t msg = {0};
+                snprintf(msg.msg, 64, "SENSOR: BROWNOUT DETECTED!");
+                msg.msg_len = strlen(msg.msg);
+
+                xQueueSend(logs_queue, &msg, 0);
+            }
+            
         }
     }
 }

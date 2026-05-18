@@ -4,7 +4,7 @@ QueueHandle_t ble_data_queue = NULL;
 static bool ble_running = false;
 // static const uint8_t plants_mac[6] = {0xac, 0xa7, 0x04, 0xb9, 0x1e, 0xc6};
 static const uint8_t plants_mac_reverse[6] = {0xc6, 0x1e, 0xb9, 0x04, 0xa7, 0xac};
-static uint8_t last_msg_id = 0;
+static uint8_t last_msg_id = 0xab;
 
 static int ble_gap_event_handler(struct ble_gap_event *event, void *arg) 
 {    
@@ -20,20 +20,22 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
             int rc = ble_hs_adv_parse_fields(&fields, disc->data, disc->length_data);
             
             ble_payload_t payload = {
-                .bat = 0xff,
+                .bat = 0x0000,
                 .hum1 = 0xff,
                 .hum2 = 0xff,
+                .brownout = false
             };
 
-            if (rc == 0 && fields.mfg_data != NULL && fields.mfg_data_len > 4)
+            if (rc == 0 && fields.mfg_data != NULL && fields.mfg_data_len > 6)
             {
                 int len = fields.mfg_data_len;
 
                 temp_last_msg_id = fields.mfg_data[len - 1];
                 
-                payload.hum2 = fields.mfg_data[len - 2];
-                payload.hum1 = fields.mfg_data[len - 3];
-                payload.bat = fields.mfg_data[len - 4];
+                payload.brownout = fields.mfg_data[len - 2] == 0x01 ? true : false;
+                payload.bat = (fields.mfg_data[len - 4] << 8) | fields.mfg_data[len - 3];
+                payload.hum2 = fields.mfg_data[len - 5];
+                payload.hum1 = fields.mfg_data[len - 6];
             }
 
             if (temp_last_msg_id != last_msg_id) xQueueSend(ble_data_queue, &payload, 0);
