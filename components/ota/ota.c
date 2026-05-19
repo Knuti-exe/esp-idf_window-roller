@@ -14,8 +14,6 @@ void https_ota_update();
 void https_ota_loop(void *pvParameters);
 esp_err_t validate_version(esp_app_desc_t *new_app);
 
-
-
 esp_err_t https_ota_init(input_ota_conf_t *config)
 {
     if (config->cert == NULL || config->URL == NULL) return ESP_FAIL;
@@ -26,7 +24,7 @@ esp_err_t https_ota_init(input_ota_conf_t *config)
     blockUpdate = config->_blockUpdate;
     LogsQueue = config->logs_queue;
 
-    interval = interval ? interval : 2;
+    interval = interval ? interval : 24;
 
     xTaskCreate(https_ota_loop, "ota update", 8192, NULL, 5, &ota_loop_handle);
 
@@ -165,8 +163,8 @@ void https_ota_update()
                 {
                     if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) 
                     {
-                        ESP_LOGE(tag, "Image validation failed, image is corrupted");
-                        snprintf(log_msg.msg, 64, "OTA: Image validation FAILED."); 
+                        ESP_LOGE(tag, "Image validation failed, image is corrupted or not-signed");
+                        snprintf(log_msg.msg, 64, "[ERROR]\t\tOTA: Validation FAILED - (not signed or corrupted)"); 
                         log_msg.msg_len = strlen(log_msg.msg);
                         xQueueSend(LogsQueue, &log_msg, 0); 
                     }

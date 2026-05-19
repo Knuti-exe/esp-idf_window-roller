@@ -1,98 +1,4 @@
-#include <stdio.h>
-#include "easy_connect.h"
-#include <driver/gpio.h>
-#include "ota.h"
-#include "custom_mqtt.h"
-#include <esp_sntp.h>
-#include <esp_timer.h>
-#include <freertos/semphr.h>
-#include <esp_system.h>
-#include "ble_listening.h"
-#include "esp_heap_caps.h"
-
-#ifdef CONFIG_OTA_UPDATES_INTERVAL
-#define OTA_UPDATES_INTERVAL CONFIG_OTA_UPDATES_INTERVAL
-#else
-#define OTA_UPDATES_INTERVAL 6
-#endif
-
-#define GPIO_1  5
-#define GPIO_2  6
-#define GPIO_3  7
-#define GPIO_4  10
-#define GPIO_OUTPUT_PIN_SEL  ((1ULL<<GPIO_1) | (1ULL<<GPIO_2) | \
-                              (1ULL<<GPIO_3) | (1ULL<<GPIO_4))
-#define DELAY 2
-#define QUEUE_LENGTH 20
-
-typedef struct {
-    volatile uint32_t steps;
-} motor_t;
-
-void process_input(void *pvParameters);
-void runMotor(void *pvParameters);
-void pubInfo();
-void motor_timer_callback(void* arg);
-void log_timer_callback(void* arg);
-esp_err_t load_config();
-void save_config();
-void send_logs(void *pvParameters);
-void send_ble_data(void *pvParameters);
-void heap_stats(void *pvParameters);
-
-const char *tag = "WIN_ROLL";
-const gpio_num_t pins[4] = {GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_7, GPIO_NUM_10};
-const char *topic_roller_state_pub = "smart_home/window_roller/state";          // Roller position (ACK) 
-const char *topic_motor_sub = "smart_home/window_roller/motor";                 // Motor position (command)
-const char *topic_force_ota_sub = "smart_home/window_roller/update";            // Msg "true" will try to force OTA update
-const char *topic_logs_pub = "smart_home/window_roller/logs";                   // Logs (optional for debugging)
-const char *topic_plant1_pub = "smart_home/window_roller/plants/plant1";        // Received and retransmitted data from BLE sensor
-const char *topic_plant2_pub = "smart_home/window_roller/plants/plant2";        // As above
-const char *topic_battery_pub = "smart_home/window_roller/plants/battery";      // As above
-const char *topic_set_motor_sub = "smart_home/window_roller/set_motor";         // Roller position override ("up", "half", "down")
-const char *topic_ram_log_sub = "smart_home/window_roller/ram_logging";         // Switch for RAM stats - turned on by default
-const char *topic_steps_pub = "smart_home/window_roller/steps";                 // Motor steps (shared once every 20 sec)
-const int ROLLER_UP = 0;
-const int ROLLER_HALF = 40000;
-const int ROLLER_DOWN = 86000;
-static bool cancel_rollback = false;
-volatile int target_step = 0;
-int seq_index = 0;
-int log_index = 0;
-static bool logging_ram = true;
-
-
-static const int sequence[9][2] = {
-    {GPIO_1, -1},
-    {GPIO_1, GPIO_2},
-    {GPIO_2, -1},
-    {GPIO_2, GPIO_3},
-    {GPIO_3, -1},
-    {GPIO_3, GPIO_4},
-    {GPIO_4, -1},
-    {GPIO_4, GPIO_1},
-    {GPIO_1, -1}
-};
-
-static QueueHandle_t motorQueue;
-static motor_t motor;
-esp_timer_handle_t motor_timer;
-const esp_timer_create_args_t timer_args = {
-    .callback = &motor_timer_callback,
-    .name = "motor_timer"
-};
-esp_timer_handle_t logs_timer;
-const esp_timer_create_args_t log_timer_args = {
-    .callback = &log_timer_callback,
-    .name = "log_timer"
-};
-static SemaphoreHandle_t motor_sem = NULL;
-static SemaphoreHandle_t blockUpdate = NULL;
-static StaticQueue_t static_logs_queue;
-QueueHandle_t logs_queue;
-LogsMsg_t xPayloadStorage[QUEUE_LENGTH];
-QueueHandle_t ble_queue;
-TaskHandle_t ram_task_handle;
+#include "window_roller.h"
 
 void app_main(void)
 {
@@ -153,19 +59,11 @@ void app_main(void)
         .logs_queue = logs_queue
     };
 
-    LogsMsg_t log_msg = {0};
     
     ret = https_ota_init(&config);
-    if (ret != ESP_OK) 
-    {
-        ESP_LOGE(tag, "OTA init error");
-        snprintf(log_msg.msg, 64, "OTA init: Error");
-    }
-    else
-    {
-        snprintf(log_msg.msg, 64, "OTA init: OK");
-    }
-    xQueueSend(logs_queue, &log_msg, 0);    
+    if (ret == ESP_FAIL) queue_log("OTA init: Cert or URL is empty!", 3);
+    else queue_log("OTA init: ok", 1);
+
 
     //                              Motor driver configuration
     /************************************************************************ */
@@ -222,7 +120,7 @@ void app_main(void)
     //                              Logs
     /************************************************************************ */
 
-    xTaskCreate(heap_stats, "RAM stats publishing", 4096, (void *)logs_queue, 2, &ram_task_handle);
+    xTaskCreate(heap_stats, "RAM stats publishing", 4096, NULL, 2, &ram_task_handle);
 
     if (!logging_ram) vTaskSuspend(ram_task_handle);
     
@@ -233,46 +131,16 @@ void app_main(void)
     [X] Steps counter - logic 
     [X] Stepper motor driver
     [X] OTA new feature -> blocking update while motor is working and program on update
-    [ ] logs - in one, simple function
+    [X] logs - in one, simple function
     [X] Receiving timedate from local server and add timestamp to logs - done on local python script
     [X] BLE listening
     [X] Heap stats
-    
+    [X] funcions docs
+    [X] Secure OTA
    */
 
 }
 
-
-void pubInfo()
-{
-    esp_err_t ret;
-    payload_t data = {0};
-
-    data.topic = strdup(topic_roller_state_pub);
-
-    if (motor.steps < ROLLER_UP + 10) data.msg = strdup("Fully opened");
-    else if (motor.steps > (ROLLER_HALF - 10) 
-        && (motor.steps < ROLLER_HALF + 10)) data.msg = strdup("half opened");
-    else if (motor.steps > ROLLER_DOWN - 10) data.msg = strdup("Fully closed");
-    else
-    {   
-        int len = snprintf(NULL, 0, "Unknown pos: %ld", motor.steps);
-        data.msg = malloc(len + 1);       
-
-        snprintf(data.msg, len + 1, "Unknown pos: %ld", motor.steps);
-    }
-    data.msg_len = strlen(data.msg);
-
-    ret = mqtt_pub(&data);
-
-    if (ret == ESP_ERR_INVALID_ARG) ESP_LOGE(tag, "Could not publicate data - damaged payload");
-    else if (ret == ESP_FAIL) ESP_LOGE(tag, "Could not publicate data - general error");
-
-    free(data.topic);
-    free(data.msg);
-    data.topic = NULL;
-    data.msg = NULL;
-}
 
 void runMotor(void *pvParameters)
 {
@@ -296,16 +164,11 @@ void runMotor(void *pvParameters)
 
             if (xSemaphoreTake(motor_sem, portMAX_DELAY) == pdPASS)
             {
-                LogsMsg_t log_msg = {0};
-                snprintf(log_msg.msg, 64, "Motor state: in desired position");
-                log_msg.msg_len = strlen(log_msg.msg);
-                
-                xQueueSend(logs_queue, &log_msg, 0);
+                queue_log("Motor state: in desired position", 1);
+
                 ESP_LOGI(tag, "Motor state: in desired position");
 
                 esp_timer_stop(logs_timer);
-
-                pubInfo();
 
                 save_config();
 
@@ -354,15 +217,11 @@ void motor_timer_callback(void* arg)
 
 void log_timer_callback(void* arg)
 {   
-    LogsMsg_t log_msg = {0};
-    
-    snprintf(log_msg.msg, 64, "Motor steps: %ld", motor.steps);
-    log_msg.msg_len = strlen(log_msg.msg);
-                
-    xQueueSend(logs_queue, &log_msg, 0);
-    ESP_LOGI(tag, "Motor steps: %ld", motor.steps);
+    char msg[50];
+    snprintf(msg, 50, "Motor steps: %ld", motor.steps);    
+    queue_log(msg, 0);
 
-    mqtt_log(&log_msg, topic_steps_pub);
+    ESP_LOGI(tag, "Motor steps: %ld", motor.steps);
 }
 
 void process_input(void *pvParameters)
@@ -434,23 +293,13 @@ void process_input(void *pvParameters)
         {
             if (strcmp(data->msg, "true") == 0)
             {
-                LogsMsg_t log_msg = {0};
-    
-                snprintf(log_msg.msg, 64, "FREE RAM: Logging turned ON");
-                log_msg.msg_len = strlen(log_msg.msg);
-                            
-                xQueueSend(logs_queue, &log_msg, 0);
+                queue_log("FREE RAM: Logging turned ON");
 
                 vTaskResume(ram_task_handle);
             } 
             else if (strcmp(data->msg, "false") == 0) 
             {
-                LogsMsg_t log_msg = {0};
-    
-                snprintf(log_msg.msg, 64, "FREE RAM: Logging turned OFF");
-                log_msg.msg_len = strlen(log_msg.msg);
-                            
-                xQueueSend(logs_queue, &log_msg, 0);
+                queue_log("FREE RAM: Logging turned OFF");
 
                 vTaskSuspend(ram_task_handle);
             }
@@ -462,13 +311,6 @@ void process_input(void *pvParameters)
         
     }    
 }
-
-/*
-    motor_data:
-        uint32_t steps;
-    ram_logging:
-        bool state;
-*/
 
 void save_config() 
 {
@@ -610,7 +452,7 @@ void send_ble_data(void *pvParameters)
             mqtt_data[1].msg_len = 5;
             
             snprintf(mqtt_data[2].msg, 9, "%u mV", (unsigned int)data.bat);  // "XXXXX mV" => max 8 chars + '\0'
-            mqtt_data[2].msg_len = 9;
+            mqtt_data[2].msg_len = 8;  // we dont want last char, which will be random trash
             
             for (int i=0; i<3; i++)
             {
@@ -636,28 +478,42 @@ void send_ble_data(void *pvParameters)
 
 void heap_stats(void *pvParameters)
 {
-    QueueHandle_t queue = (QueueHandle_t) pvParameters;
     uint32_t free_ram, min_free_ram;
     size_t largest_block;
 
-    LogsMsg_t log_msg = {0};
+    char log_msg[50];
     
     for (;;)
     {
         if (xSemaphoreTake(blockUpdate, 200) == pdPASS)
         {
-            memset(log_msg.msg, 0, 64);
+            memset(log_msg, 0, 50);
 
             free_ram = esp_get_free_heap_size();
             min_free_ram = esp_get_minimum_free_heap_size();
             largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
-            snprintf(log_msg.msg, 64, "Free RAM: %lub; %zub; %lub", free_ram, largest_block, min_free_ram);
+            snprintf(log_msg, 50, "Free RAM: %lub; %zub; %lub", free_ram, largest_block, min_free_ram);
 
-            xQueueSend(queue, &log_msg, 0);
+            queue_log(log_msg);
 
             xSemaphoreGive(blockUpdate);
         }  
         vTaskDelay(pdMS_TO_TICKS(1000 * 60)); // once every 1min
     }
+}
+
+void queue_log_fun(fun_args args)
+{
+    if (strlen(args.msg) == 0) return;
+    int _lvl = args.lvl < 4 ? args.lvl : 0;
+
+    LogsMsg_t payload = {0};
+
+    if (_lvl == 2) snprintf(payload.msg, 64, "%s\t%.*s",log_lvl[_lvl], strlen(args.msg), args.msg);
+    else snprintf(payload.msg, 64, "%s\t\t%.*s",log_lvl[_lvl], strlen(args.msg), args.msg);
+
+    payload.msg_len = strlen(payload.msg);
+
+    xQueueSend(logs_queue, &payload, 0);
 }

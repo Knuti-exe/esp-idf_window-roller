@@ -6,7 +6,6 @@ static const char *dpp_tag = "DPP";
 static int s_retry_num = 0;
 static wifi_config_t s_dpp_wifi_config = {};
 static EventGroupHandle_t s_dpp_event_group;
-static bool s_dpp_config_received = false;
 uint8_t ssid[32];
 uint8_t passwd[64];
 

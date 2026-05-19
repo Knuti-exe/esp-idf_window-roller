@@ -1,4 +1,5 @@
 #include "custom_mqtt.h"
+#include "mqtt_cred.h"
 
 static const char *tag = "MQTT";
 QueueHandle_t ReceivedQueue;
@@ -122,11 +123,11 @@ esp_err_t mqtt_start(esp_mqtt_topic_t *_topics, int size, char *ca_crt_start)
             .certificate_len = 0,
         },
         .credentials = {
-            .username = "custom",
-            .authentication.password = "broker#123"
+            .username = SECRET_USERNAME,
+            .authentication.password = SECRET_PASSWORD
         },
         .network.reconnect_timeout_ms = 1000,
-        .session.protocol_ver = MQTT_PROTOCOL_V_3_1_1, // TODO mqtt 5
+        .session.protocol_ver = MQTT_PROTOCOL_V_3_1_1,
          
     };
 

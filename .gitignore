@@ -3,3 +3,4 @@ build/
 main/certs/*
 sdkconfig
 sdkconfig.old
+components/custom_mqtt/mqtt_cred.h

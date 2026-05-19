@@ -9,6 +9,18 @@ typedef struct {
     bool brownout;
 } ble_payload_t;
 
+/**
+ * @brief Initializes NimBLE stack
+ * @param ble_queue BLE Queue, where received data will be inserted
+ */
 void init_ble_scanner(QueueHandle_t ble_queue);
+
+/**
+ * @brief Stops BLE listening
+ */
 void suspend_ble();
+
+/**
+ * @brief Resumes BLE listening
+ */
 void resume_ble();
