@@ -27,6 +27,12 @@
 #define DELAY 2
 #define QUEUE_LENGTH 20
 
+/**
+ * @brief Packs and sends log message to `logs_queue`, which will be processed in `send_logs()` 
+ *
+ * @param msg   message to be send. Cannot be empty.
+ * @param lvl   Message tag (0 - INFO;  1 - OK;  2 - WARNING;  3 - ERROR)
+ */
 #define queue_log(...) queue_log_fun((fun_args){__VA_ARGS__})
 
 typedef struct {
@@ -92,6 +98,11 @@ void heap_stats(void *pvParameters);
  * @param lvl   Message tag (0 - INFO;  1 - OK;  2 - WARNING;  3 - ERROR)
  */
 void queue_log_fun(fun_args args);
+
+/**
+ * @brief Sends last reset reason
+ */
+void log_reset_reason();
 
 const char *tag = "WIN_ROLL";
 const gpio_num_t pins[4] = {GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_7, GPIO_NUM_10};

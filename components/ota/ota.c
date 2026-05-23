@@ -34,12 +34,12 @@ esp_err_t https_ota_init(input_ota_conf_t *config)
 void https_ota_loop(void *pvParameters)
 {
     esp_ota_conf.http_config = &http_conf;
-
+    const TickType_t hour = pdMS_TO_TICKS(3600000);
     uint32_t notified_bits;
 
     for (;;)
     {
-        esp_err_t ret = xTaskNotifyWait(0x00, ULONG_MAX, &notified_bits, pdMS_TO_TICKS(3600000 * interval));
+        esp_err_t ret = xTaskNotifyWait(0x00, ULONG_MAX, &notified_bits, hour * interval);
 
         if ((notified_bits & (1 << 0)) || ret == pdFAIL)
         {
@@ -48,7 +48,7 @@ void https_ota_loop(void *pvParameters)
             ESP_LOGI(tag, "Starting OTA update...");
 
             LogsMsg_t log_msg = {0};
-            snprintf(log_msg.msg, 64, "OTA: Starting OTA update...");
+            snprintf(log_msg.msg, 64, "[INFO]\t\tOTA: Starting OTA update...");
             log_msg.msg_len = strlen(log_msg.msg);
             xQueueSend(LogsQueue, &log_msg, 0); 
 
@@ -73,8 +73,8 @@ void ota_cancel_rollback()
 
     LogsMsg_t log_msg = {0};
     
-    if (ret == ESP_OK) snprintf(log_msg.msg, 64, "OTA: APP OK - Rollback canceled.");    
-    else snprintf(log_msg.msg, 64, "OTA: APP WARNING - Could not rollback application.");
+    if (ret == ESP_OK) snprintf(log_msg.msg, 64, "[OK]\t\tOTA: Rollback canceled.");    
+    else snprintf(log_msg.msg, 64, "[ERROR]\t\tOTA: Could not rollback application.");
 
     log_msg.msg_len = strlen(log_msg.msg);
     xQueueSend(LogsQueue, &log_msg, 0); 
@@ -94,7 +94,7 @@ void https_ota_update()
         if (ret != ESP_OK)
         {
             ESP_LOGE(tag, "Unexpected error on ota_begin: %s", esp_err_to_name(ret));
-            snprintf(log_msg.msg, 64, "OTA: UPDATE ERROR - %s", esp_err_to_name(ret)); 
+            snprintf(log_msg.msg, 64, "[ERROR]\t\tOTA: UPDATE ERROR - %s", esp_err_to_name(ret)); 
             log_msg.msg_len = strlen(log_msg.msg);
             xQueueSend(LogsQueue, &log_msg, 0); 
 
@@ -107,7 +107,7 @@ void https_ota_update()
         if (ret != ESP_OK)
         {
             ESP_LOGE(tag, "Unexpected error on ota_get_img_desc: %s", esp_err_to_name(ret));
-            snprintf(log_msg.msg, 64, "OTA: READING IMAGE ERROR - %s", esp_err_to_name(ret)); 
+            snprintf(log_msg.msg, 64, "[ERROR]\t\tOTA: READING IMAGE ERROR - %s", esp_err_to_name(ret)); 
             log_msg.msg_len = strlen(log_msg.msg);
             xQueueSend(LogsQueue, &log_msg, 0); 
 
@@ -117,8 +117,8 @@ void https_ota_update()
 
         ret = validate_version(&app_desc);
 
-        if (ret == ESP_OK) snprintf(log_msg.msg, 64, "OTA: new ver available! - %s", app_desc.version);
-        else if (ret != ESP_OK) snprintf(log_msg.msg, 64, "OTA: Found older or same version! Aborting update...");
+        if (ret == ESP_OK) snprintf(log_msg.msg, 64, "[INFO]\t\tOTA: new version: %s", app_desc.version);
+        else if (ret != ESP_OK) snprintf(log_msg.msg, 64, "[INFO]\t\tOTA: Found older or same version! Aborting update...");
         log_msg.msg_len = strlen(log_msg.msg);
 
         xQueueSend(LogsQueue, &log_msg, 0); 
@@ -152,7 +152,7 @@ void https_ota_update()
                 if (ret == ESP_OK && ota_finish_err == ESP_OK) 
                 {
                     ESP_LOGI(tag, "ESP_HTTPS_OTA upgrade successful. Rebooting...");
-                    snprintf(log_msg.msg, 64, "OTA: UPGRADE SUCCESSFUL - Rebooting..."); 
+                    snprintf(log_msg.msg, 64, "[OK]\t\tOTA: UPGRADE SUCCESSFUL - Rebooting..."); 
                     log_msg.msg_len = strlen(log_msg.msg);
                     xQueueSend(LogsQueue, &log_msg, 0); 
 

@@ -120,11 +120,13 @@ void app_main(void)
     //                              Logs
     /************************************************************************ */
 
-    xTaskCreate(heap_stats, "RAM stats publishing", 4096, NULL, 2, &ram_task_handle);
+    xTaskCreate(heap_stats, "Heap stats publishing", 4096, NULL, 2, &ram_task_handle);
 
     if (!logging_ram) vTaskSuspend(ram_task_handle);
-    
 
+    log_reset_reason();
+
+   
     /*
     TODO:
     [X] OTA
@@ -137,6 +139,7 @@ void app_main(void)
     [X] Heap stats
     [X] funcions docs
     [X] Secure OTA
+    [ ] Stack stats
    */
 
 }
@@ -277,6 +280,8 @@ void process_input(void *pvParameters)
             {
                 xSemaphoreGive(blockUpdate);
                 ESP_LOGW(tag, "Trying to update software manually...");
+                
+                queue_log("OTA: Sent signal to manual update.");
                 force_ota_update();
             }
         }
@@ -516,4 +521,72 @@ void queue_log_fun(fun_args args)
     payload.msg_len = strlen(payload.msg);
 
     xQueueSend(logs_queue, &payload, 0);
+}
+
+void log_reset_reason()
+{
+    char msg[32] = {0};
+    char *code = NULL;
+    
+    switch (esp_reset_reason()) 
+    {
+        case ESP_RST_UNKNOWN:
+            code = strdup("ESP_RST_UNKNOWN");
+            break;
+        case ESP_RST_POWERON:
+            code = strdup("ESP_RST_POWERON");
+            break;
+        case ESP_RST_EXT:
+            code = strdup("ESP_RST_EXT");
+            break;
+        case ESP_RST_SW:
+            code = strdup("ESP_RST_SW");
+            break;
+        case ESP_RST_PANIC:
+            code = strdup("ESP_RST_PANIC");
+            break;
+        case ESP_RST_INT_WDT:
+            code = strdup("ESP_RST_INT_WDT");
+            break;
+        case ESP_RST_TASK_WDT:
+            code = strdup("ESP_RST_TASK_WDT");
+            break;
+        case ESP_RST_WDT:
+            code = strdup("ESP_RST_WDT");
+            break;
+        case ESP_RST_DEEPSLEEP:
+            code = strdup("ESP_RST_DEEPSLEEP");
+            break;
+        case ESP_RST_BROWNOUT:
+            code = strdup("ESP_RST_BROWNOUT");
+            break;
+        case ESP_RST_SDIO:
+            code = strdup("ESP_RST_SDIO");
+            break;
+        case ESP_RST_USB:
+            code = strdup("ESP_RST_USB");
+            break;
+        case ESP_RST_JTAG:
+            code = strdup("ESP_RST_JTAG");
+            break;
+        case ESP_RST_EFUSE:
+            code = strdup("ESP_RST_EFUSE");
+            break;
+        case ESP_RST_PWR_GLITCH:
+            code = strdup("ESP_RST_PWR_GLITCH");
+            break;
+        case ESP_RST_CPU_LOCKUP:
+            code = strdup("ESP_RST_CPU_LOCKUP");
+            break;
+        default:
+            code = strdup("ESP_RST_UNKNOWN_VAL");
+            break;
+    }
+
+    snprintf(msg, 32, "Last reset: %s", code);
+
+
+    queue_log(msg, 2);
+
+    free(code);
 }
